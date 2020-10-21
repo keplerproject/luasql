@@ -382,7 +382,7 @@ static int conn_execute(lua_State *L)
   sqlite3_stmt *vm;
   const char *errmsg;
   int numcols;
-  const char *tail;
+  const char *tail = NULL;
 
 #if SQLITE_VERSION_NUMBER > 3006013
   res = sqlite3_prepare_v2(conn->sql_conn, statement, -1, &vm, &tail);
@@ -399,25 +399,42 @@ static int conn_execute(lua_State *L)
   res = sqlite3_step(vm);
   numcols = sqlite3_column_count(vm);
 
-  /* real query? if empty, must have numcols!=0 */
-  if ((res == SQLITE_ROW) || ((res == SQLITE_DONE) && numcols))
-    {
-      sqlite3_reset(vm);
-      return create_cursor(L, 1, conn, vm, numcols);
-    }
+  while (*tail == '\n' || *tail == '\r' || *tail == ' ') tail ++;
 
-  if (res == SQLITE_DONE) /* and numcols==0, INSERT,UPDATE,DELETE statement */
+  if ( tail == NULL || strlen(tail) == 0 )
+    {
+      /* real query? if empty, must have numcols!=0 */
+      if ((res == SQLITE_ROW) || ((res == SQLITE_DONE) && numcols))
+        {
+          sqlite3_reset(vm);
+          return create_cursor(L, 1, conn, vm, numcols);
+        }
+
+      if (res == SQLITE_DONE) /* and numcols==0, INSERT,UPDATE,DELETE statement */
+        {
+          sqlite3_finalize(vm);
+          /* return number of columns changed */
+          lua_pushnumber(L, sqlite3_changes(conn->sql_conn));
+          return 1;
+        }
+
+      /* error */
+      errmsg = sqlite3_errmsg(conn->sql_conn);
+      sqlite3_finalize(vm);
+      return luasql_faildirect(L, errmsg);
+    }
+  else
     {
       sqlite3_finalize(vm);
-      /* return number of columns changed */
-      lua_pushnumber(L, sqlite3_changes(conn->sql_conn));
+      int ret = sqlite3_exec(conn->sql_conn, tail, NULL, NULL, (char**)&errmsg);
+
+      if ( ret != SQLITE_OK )
+        {
+           return luasql_faildirect(L, errmsg);
+        }
+      lua_pushnumber(L, 0);
       return 1;
     }
-
-  /* error */
-  errmsg = sqlite3_errmsg(conn->sql_conn);
-  sqlite3_finalize(vm);
-  return luasql_faildirect(L, errmsg);
 }
 
 
